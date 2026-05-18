@@ -1,0 +1,142 @@
+
+"""
+Ultra-light Chiral Sorter - Optimized
+- Computes coherence/smoothness only once per path
+- Returns rich scores (combined + breakdown)
+- Still very lightweight
+- Deltas are now generated exactly once per path (optimization)
+"""
+
+import math
+from dataclasses import dataclass
+from typing import List, Any, Optional
+
+
+@dataclass
+class PathScore:
+    path: List[Any]
+    combined: float          # final score used for ranking (lower is better)
+    primary: float
+    handedness: float        # combined coherence + smoothness
+    coherence: float
+    smoothness: float
+
+
+def _extract_deltas(solution: List[Any]):
+    if len(solution) < 2:
+        return []
+    deltas = []
+    for i in range(1, len(solution)):
+        p, c = solution[i-1], solution[i]
+        if isinstance(p, (list, tuple)) and isinstance(c, (list, tuple)):
+            deltas.append((float(c[0] - p[0]), float(c[1] - p[1])))
+        else:
+            deltas.append((float(c) - float(p),))
+    return deltas
+
+
+def fast_coherence_smoothness(solution: List[Any], deltas: Optional[List[tuple]] = None):
+    """Returns coherence, smoothness. 
+    If deltas is provided, skips extraction (more efficient).
+    """
+    if deltas is None:
+        deltas = _extract_deltas(solution)
+
+    n_turns = len(deltas) - 1
+    if n_turns < 1:
+        return 1.0, 1.0
+
+    prev_sign = 0
+    consistent = 0
+    total_abs_turn = 0.0
+
+    d0 = deltas[0]
+    a0 = math.atan2(d0[1], d0[0]) if len(d0) >= 2 else 0.0
+
+    for i in range(1, len(deltas)):
+        d = deltas[i]
+        a = math.atan2(d[1], d[0]) if len(d) >= 2 else 0.0
+        dang = (a - a0 + math.pi) % (2 * math.pi) - math.pi
+        total_abs_turn += abs(dang)
+
+        h = 1 if dang > 0 else (-1 if dang < 0 else 0)
+        if h != 0 and h == prev_sign:
+            consistent += 1
+        if h != 0:
+            prev_sign = h
+        a0 = a
+
+    coherence = consistent / n_turns
+    avg_turn = total_abs_turn / n_turns
+    norm_curv = min(1.0, avg_turn / (math.pi / 3.0))
+    smoothness = coherence * (1.0 - norm_curv)
+    return coherence, max(0.0, min(1.0, smoothness))
+
+
+def rank_paths(
+    paths: List[List[Any]],
+    primary_costs: Optional[List[float]] = None,
+    handedness_weight: float = 1.0,
+    primary_weight: float = 1.0,
+    w_coherence: float = 0.55,
+    w_smoothness: float = 0.45,
+    lower_is_better_primary: bool = True,
+) -> List[PathScore]:
+    """
+    Rank paths by combining primary cost + handedness (coherence + smoothness).
+    Computes everything efficiently (deltas generated exactly once per path).
+    """
+    if primary_costs is None:
+        primary_costs = [0.0] * len(paths)
+
+    results = []
+    for path, p_cost in zip(paths, primary_costs):
+        deltas = _extract_deltas(path)                    # ← computed once
+        coherence, smoothness = fast_coherence_smoothness(path, deltas=deltas)
+        h_score = w_coherence * coherence + w_smoothness * smoothness
+
+        if lower_is_better_primary:
+            combined = primary_weight * p_cost - handedness_weight * h_score
+        else:
+            combined = primary_weight * p_cost + handedness_weight * h_score
+
+        results.append(PathScore(
+            path=path,
+            combined=combined,
+            primary=p_cost,
+            handedness=h_score,
+            coherence=coherence,
+            smoothness=smoothness
+        ))
+
+    results.sort(key=lambda x: x.combined)
+    return results
+
+
+# Demo
+if __name__ == "__main__":
+    print("=== Ultra-light Optimized (with full scores) ===\n")
+
+    solutions = [
+        [(0,0), (1,0), (2,0), (2,1), (2,2)],
+        [(0,0), (1,0), (2,0), (3,0), (3,1), (3,2), (3,3)],
+        [(0,0), (1,0), (1,1), (2,1), (2,2)],
+        [(0,0), (1,0), (0,1), (1,1), (2,2)],
+        [(0,0), (2,0), (2,2), (4,2), (4,4), (6,4), (6,6)],
+        [(0,0), (0,2), (2,2), (2,0), (4,0), (4,2), (6,2)],
+    ]
+    primary_costs = [5.0, 6.5, 5.2, 6.0, 7.8, 8.2]
+
+    ranked = rank_paths(
+        solutions,
+        primary_costs=primary_costs,
+        handedness_weight=1.0,
+        primary_weight=1.0
+    )
+
+    for i, ps in enumerate(ranked, 1):
+        print(f"{i}. combined={ps.combined:7.3f} | "
+              f"primary={ps.primary:5.1f} | "
+              f"handedness={ps.handedness:.3f} | "
+              f"coh={ps.coherence:.3f} | smooth={ps.smoothness:.3f}")
+        print(f"   {ps.path}\n")
